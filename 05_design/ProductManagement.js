@@ -23,15 +23,32 @@ import {
     Edit,
     Delete,
     Search,
-    Add
+    Add,
+    AddShoppingCart,
+    ShoppingCart,
+    Remove
 } from '@mui/icons-material';
 
 const ProductManagement = () => {
     const [products, setProducts] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    
+    // Cart state
+    const [cart, setCart] = useState({ id: 0, session_id: '', cart_items: [] });
+    const [cartLoading, setCartLoading] = useState(false);
 
-    const API_BASE_URL = 'http://localhost:8000';
+    const API_BASE_URL = 'http://localhost:8001'; // Updated to port 8001
+    
+    // Generate or get session ID
+    const getSessionId = () => {
+        let sessionId = localStorage.getItem('cart_session_id');
+        if (!sessionId) {
+            sessionId = 'guest_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            localStorage.setItem('cart_session_id', sessionId);
+        }
+        return sessionId;
+    };
 
     // Fetch products from API
     const fetchProducts = async () => {
@@ -51,9 +68,97 @@ const ProductManagement = () => {
         }
     };
 
-    // Load products on component mount
+    // Fetch cart from API
+    const fetchCart = async () => {
+        try {
+            const sessionId = getSessionId();
+            const response = await fetch(`${API_BASE_URL}/cart/${sessionId}`);
+            if (response.ok) {
+                const cartData = await response.json();
+                setCart(cartData);
+            }
+        } catch (err) {
+            console.error('Error fetching cart:', err);
+        }
+    };
+
+    // Add item to cart
+    const addToCart = async (product) => {
+        if (product.stock <= 0) {
+            setError('Product is out of stock');
+            return;
+        }
+
+        try {
+            setCartLoading(true);
+            const sessionId = getSessionId();
+            
+            const response = await fetch(`${API_BASE_URL}/cart/add?session_id=${sessionId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    product_id: product.id,
+                    quantity: 1
+                })
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.detail || 'Failed to add item to cart');
+            }
+
+            // Re-fetch cart and products to update stock
+            await Promise.all([fetchCart(), fetchProducts()]);
+            
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setCartLoading(false);
+        }
+    };
+
+    // Remove item from cart
+    const removeFromCart = async (itemId) => {
+        try {
+            setCartLoading(true);
+            const sessionId = getSessionId();
+            
+            const response = await fetch(`${API_BASE_URL}/cart/${sessionId}/item/${itemId}`, {
+                method: 'DELETE'
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to remove item from cart');
+            }
+
+            // Re-fetch cart and products
+            await Promise.all([fetchCart(), fetchProducts()]);
+            
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setCartLoading(false);
+        }
+    };
+
+    // Get cart total
+    const getCartTotal = () => {
+        return cart.cart_items.reduce((total, item) => {
+            return total + (item.product.price * item.quantity);
+        }, 0).toFixed(2);
+    };
+
+    // Get cart item count
+    const getCartItemCount = () => {
+        return cart.cart_items.reduce((total, item) => total + item.quantity, 0);
+    };
+
+    // Load products and cart on component mount
     useEffect(() => {
         fetchProducts();
+        fetchCart();
     }, []);
 
     const [searchTerm, setSearchTerm] = useState('');
@@ -330,29 +435,49 @@ const ProductManagement = () => {
                                 <Divider />
 
                                 <CardActions sx={{ p: 2, justifyContent: 'space-between' }}>
+                                    <Box display="flex" gap={1}>
+                                        <Button
+                                            size="small"
+                                            startIcon={<Visibility />}
+                                            onClick={() => handleView(product)}
+                                            sx={{ color: 'text.secondary' }}
+                                        >
+                                            View
+                                        </Button>
+                                        <Button
+                                            size="small"
+                                            startIcon={<Edit />}
+                                            onClick={() => handleEdit(product)}
+                                            sx={{ color: 'primary.main' }}
+                                        >
+                                            Edit
+                                        </Button>
+                                        <Button
+                                            size="small"
+                                            startIcon={<Delete />}
+                                            onClick={() => handleDelete(product)}
+                                            sx={{ color: 'error.main' }}
+                                        >
+                                            Delete
+                                        </Button>
+                                    </Box>
                                     <Button
+                                        variant="contained"
                                         size="small"
-                                        startIcon={<Visibility />}
-                                        onClick={() => handleView(product)}
-                                        sx={{ color: 'text.secondary' }}
+                                        startIcon={<AddShoppingCart />}
+                                        onClick={() => addToCart(product)}
+                                        disabled={product.stock <= 0 || cartLoading}
+                                        sx={{
+                                            backgroundColor: '#4caf50',
+                                            '&:hover': {
+                                                backgroundColor: '#45a049'
+                                            },
+                                            '&:disabled': {
+                                                backgroundColor: '#ccc'
+                                            }
+                                        }}
                                     >
-                                        View
-                                    </Button>
-                                    <Button
-                                        size="small"
-                                        startIcon={<Edit />}
-                                        onClick={() => handleEdit(product)}
-                                        sx={{ color: 'primary.main' }}
-                                    >
-                                        Edit
-                                    </Button>
-                                    <Button
-                                        size="small"
-                                        startIcon={<Delete />}
-                                        onClick={() => handleDelete(product)}
-                                        sx={{ color: 'error.main' }}
-                                    >
-                                        Delete
+                                        {product.stock <= 0 ? 'Out of Stock' : 'Add to Cart'}
                                     </Button>
                                 </CardActions>
                             </Card>
@@ -586,6 +711,89 @@ const ProductManagement = () => {
                     </Button>
                 </DialogActions>
             </Dialog>
+            
+            {/* Cart Widget - Bottom Left */}
+            {getCartItemCount() > 0 && (
+                <Paper
+                    elevation={8}
+                    sx={{
+                        position: 'fixed',
+                        bottom: 20,
+                        left: 20,
+                        width: 300,
+                        maxHeight: 400,
+                        zIndex: 1000,
+                        borderRadius: 2,
+                        overflow: 'hidden'
+                    }}
+                >
+                    <Box
+                        sx={{
+                            backgroundColor: '#1976d2',
+                            color: 'white',
+                            p: 2,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 1
+                        }}
+                    >
+                        <ShoppingCart />
+                        <Typography variant="h6" sx={{ flexGrow: 1 }}>
+                            Shopping Cart
+                        </Typography>
+                        <Typography variant="body2">
+                            {getCartItemCount()} items
+                        </Typography>
+                    </Box>
+                    
+                    <Box sx={{ maxHeight: 300, overflow: 'auto' }}>
+                        {cart.cart_items.map((item) => (
+                            <Box
+                                key={item.id}
+                                sx={{
+                                    p: 2,
+                                    borderBottom: '1px solid #eee',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 2
+                                }}
+                            >
+                                <Box sx={{ flexGrow: 1 }}>
+                                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                                        {item.product.name}
+                                    </Typography>
+                                    <Typography variant="caption" color="text.secondary">
+                                        ${item.product.price} × {item.quantity}
+                                    </Typography>
+                                </Box>
+                                <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                                    ${(item.product.price * item.quantity).toFixed(2)}
+                                </Typography>
+                                <IconButton
+                                    size="small"
+                                    onClick={() => removeFromCart(item.id)}
+                                    disabled={cartLoading}
+                                    sx={{ color: 'error.main' }}
+                                >
+                                    <Remove />
+                                </IconButton>
+                            </Box>
+                        ))}
+                    </Box>
+                    
+                    <Box
+                        sx={{
+                            p: 2,
+                            backgroundColor: '#f5f5f5',
+                            borderTop: '1px solid #ddd'
+                        }}
+                    >
+                        <Typography variant="h6" sx={{ textAlign: 'center' }}>
+                            Total: ${getCartTotal()}
+                        </Typography>
+                    </Box>
+                </Paper>
+            )}
         </Box>
     );
 };
